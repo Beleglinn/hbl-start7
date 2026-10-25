@@ -1,0 +1,51 @@
+name: HBL Start7 Scout
+
+on:
+  # Manuell starten – auch aus der GitHub-App: Actions → "HBL Start7 Scout" → Run workflow
+  workflow_dispatch:
+  # Automatisch (Zeiten in UTC): täglich morgens + abends nach den Spielen
+  schedule:
+    - cron: "17 5 * * *"    # ~06:17/07:17 Uhr deutscher Zeit
+    - cron: "47 21 * * *"   # ~22:47/23:47 Uhr deutscher Zeit
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Daten holen & Seite bauen
+        run: python hbl_start7.py --out site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      # Excel zusätzlich als Download am Workflow-Lauf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hbl_start7
+          path: site/hbl_start7.xlsx
+          retention-days: 14
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
