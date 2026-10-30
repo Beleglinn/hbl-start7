@@ -157,6 +157,14 @@ def strip_ns(i: str | None) -> str | None:
     return i.split(":", 1)[-1] if i else i
 
 
+def de_date(d: dt.datetime, fmt: str) -> str:
+    """strftime mit deutschen Wochentagskürzeln"""
+    s = d.astimezone(TZ).strftime(fmt)
+    for en, de in (("Mon", "Mo"), ("Tue", "Di"), ("Wed", "Mi"), ("Thu", "Do"), ("Fri", "Fr"), ("Sat", "Sa"), ("Sun", "So")):
+        s = s.replace(en, de)
+    return s
+
+
 def age_from(dob: str | None, today: dt.date) -> int | None:
     if not dob:
         return None
@@ -314,16 +322,27 @@ def build_teams(raw: dict, now: dt.datetime) -> dict:
 
 
 def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], list[int]]:
-    md_numbers = [m["number"] for m, _ in raw["md_data"]]
+    # Gespielte Spiele je (Team, Spieltag). Spieltage koennen verlegt sein (z. B. ST 16 Ende September),
+    # daher wird ueberall nach Datum statt nach Spieltagsnummer sortiert.
+    team_round_fx: dict[tuple[str, int], dict] = {}
+    for t in teams.values():
+        for x in t["fixtures"]:
+            if x["status"] == "CONFIRMED" and x["start"] and str(x["round"]).isdigit():
+                team_round_fx[(t["id"], int(x["round"]))] = x
+    round_start: dict[int, dt.datetime] = {}
+    for (_, rd), x in team_round_fx.items():
+        round_start[rd] = min(round_start.get(rd, x["start"]), x["start"])
+    far = dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+    md_numbers = sorted((m["number"] for m, _ in raw["md_data"]), key=lambda n: (round_start.get(n, far), n))
     # HPI pro Spieltag: dc_id -> {number: hpi}
     md_hpi: dict[str, dict[int, float]] = {}
-    md_hpi_team: dict[str, str] = {}
+    md_hpi_team: dict[str, dict[int, str]] = {}  # Team je Spieltag (Vereinswechsel)
     for m, rows in raw["md_data"]:
         for r in rows:
             v = (r.get("index") or {}).get("avg")
             if v is not None:
                 md_hpi.setdefault(r["dc_id"], {})[m["number"]] = round(v, 1)
-                md_hpi_team[r["dc_id"]] = (r.get("team") or {}).get("dc_id")
+                md_hpi_team.setdefault(r["dc_id"], {})[m["number"]] = (r.get("team") or {}).get("dc_id")
 
     hpi = {r["dc_id"]: r for r in raw["hpi_idx"]}
     hpi_prev = {r["dc_id"]: r for r in raw["hpi_prev_idx"]}
@@ -379,9 +398,21 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
             pos = "TW"
 
         series = md_hpi.get(pid, {})
-        played_vals = [series[n] for n in md_numbers if n in series]
+
+        def round_fx(n):
+            return team_round_fx.get(((md_hpi_team.get(pid) or {}).get(n) or tid, n)) or team_round_fx.get((tid, n))
+
+        def played_at(n):
+            x = round_fx(n)
+            return x["start"] if x else round_start.get(n, far)
+        played_rounds = sorted(series, key=lambda n: (played_at(n), md_numbers.index(n)))
+        played_vals = [series[n] for n in played_rounds]
         last3 = played_vals[-3:]
         form3 = rnd(statistics.fmean(last3)) if last3 else None
+        # "last"/"trend" der HPI-API zeigen meist auf Spieltag 1 -> selbst berechnen
+        hpi_last = played_vals[-1] if played_vals else None
+        hpi_trend = (played_vals[-1] > played_vals[-2]) - (played_vals[-1] < played_vals[-2]) \
+            if len(played_vals) > 1 else 0
         avg = rnd(hi.get("avg"))
         games = sf.get("games") or sg.get("games") or 0
         minutes = iso_minutes(sf.get("timeOnPlayingField") or sg.get("timeOnPlayingField"))
@@ -395,11 +426,20 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
         for x in (team.get("next") or [])[:3]:
             o = teams.get(x["opp"], {})
             nxt.append(dict(opp=o.get("abbr") or o.get("name", "?"), opp_name=o.get("name", "?"),
-                            home=x["home"], date=x["start"].astimezone(TZ).strftime("%a %d.%m. %H:%M")
-                            .replace("Mon", "Mo").replace("Tue", "Di").replace("Wed", "Mi").replace("Thu", "Do")
-                            .replace("Fri", "Fr").replace("Sat", "Sa").replace("Sun", "So"),
+                            home=x["home"], date=de_date(x["start"], "%a %d.%m. %H:%M"),
                             opp_rank=o.get("rank"), opp_ga_pg=o.get("ga_pg"), opp_gf_pg=o.get("gf_pg"),
                             round=x["round"]))
+
+        # letztes Spiel = juengster Spieltag mit HPI-Wert des Spielers
+        rd = played_rounds[-1] if played_rounds else None
+        last_fx = round_fx(rd)
+        last_game = None
+        if last_fx:
+            o = teams.get(last_fx["opp"], {})
+            last_game = dict(date=de_date(last_fx["start"], "%a %d.%m.%Y"), round=rd,
+                             days=(today - last_fx["start"].astimezone(TZ).date()).days,
+                             opp=o.get("abbr") or o.get("name", "?"), opp_name=o.get("name", "?"),
+                             home=last_fx["home"], gf=last_fx["gf"], ga=last_fx["ga"], hpi=series[rd])
 
         speed = sf.get("speedMax") if sf else sg.get("speedMax") if sg else None
         players.append(dict(
@@ -409,8 +449,8 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
             height=(p.get("additionalDetails") or {}).get("height"),
             url=(h or {}).get("url") or f"{HBL_SITE}/de/player/{pid}",
             # HPI
-            hpi_avg=avg, hpi_avg_ex7m=rnd(hi7.get("avg")), hpi_max=rnd(hi.get("max")), hpi_last=rnd(hi.get("last")),
-            hpi_trend=hi.get("trend"), hpi_std=rnd(hi.get("stddev")), hpi_md=hi.get("matchdays"),
+            hpi_avg=avg, hpi_avg_ex7m=rnd(hi7.get("avg")), hpi_max=rnd(hi.get("max")), hpi_last=hpi_last,
+            hpi_trend=hpi_trend, hpi_std=rnd(hi.get("stddev")), hpi_md=hi.get("matchdays"),
             hpi_md_needed=hi.get("matchdays_needed"), hpi_events=hi.get("events"),
             hpi_form3=form3, hpi_form_delta=rnd(form3 - avg) if (form3 is not None and avg is not None) else None,
             hpi_prev=rnd(hp.get("avg")), hpi_prev_md=hp.get("matchdays"),
@@ -441,7 +481,7 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
             save_back_pct=rnd(sg.get("goalKeeperBackCourtSaveAccuracy")),
             save_fb_pct=rnd(sg.get("goalKeeperFastBreakSaveAccuracy")),
             # Spielplan
-            next=nxt,
+            next=nxt, last_game=last_game,
         ))
     # Nur echte Spieler (Statistik oder HPI vorhanden)
     players = [p for p in players if p["games"] or p["hpi_avg"] is not None]
@@ -472,6 +512,7 @@ COLUMNS = [  # key, header, width, group
     ("saves", "Paraden", 8, "Torwart"), ("save_pct", "Paraden %", 9, "Torwart"), ("saves_pg", "Paraden/Spiel", 9, "Torwart"),
     ("ga", "Gegentore", 9, "Torwart"), ("saves7", "7m gehalten", 9, "Torwart"), ("save7_pct", "7m %", 6, "Torwart"),
     ("dist_km", "Laufweg km", 9, "Tracking"), ("speed_kmh", "Max km/h", 8, "Tracking"),
+    ("last1", "Letztes Spiel", 24, "Spielplan"), ("last1_days", "Tage seit letztem Spiel", 9, "Spielplan"),
     ("next1", "Nächster Gegner", 16, "Spielplan"), ("next1_rank", "Gegner Platz", 8, "Spielplan"),
     ("next1_ga", "Gegner Gegentore/Sp", 10, "Spielplan"), ("team", "Verein", 24, "Basis"),
 ]
@@ -512,7 +553,10 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
     header(ws, [(h, w) for _, h, w, _ in COLUMNS])
     for r, p in enumerate(players, 2):
         n = p["next"][0] if p["next"] else {}
-        row = dict(p, next1=next_label(p), next1_rank=n.get("opp_rank"), next1_ga=n.get("opp_ga_pg"))
+        lg = p["last_game"] or {}
+        row = dict(p, next1=next_label(p), next1_rank=n.get("opp_rank"), next1_ga=n.get("opp_ga_pg"),
+                   last1=f"{lg['date']} {'H' if lg['home'] else 'A'} vs {lg['opp']}" if lg else None,
+                   last1_days=lg.get("days"))
         for c, (k, *_rest) in enumerate(COLUMNS, 1):
             cell = ws.cell(row=r, column=c, value=row.get(k))
             if k == "name":
@@ -583,6 +627,7 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
             ("Form vs Ø", "Form minus Saisonschnitt: positiv = Spieler im Aufwind."),
             ("Streuung (σ)", "Standardabweichung des HPI: klein = konstant, groß = schwankend."),
             ("HPI-Spiele", "Spieltage mit genug Aktionen für einen HPI-Wert (HBL-Ranking braucht 5)."),
+            ("Letztes Spiel", "Jüngstes Spiel mit HPI-Wert des Spielers (Einsätze mit zu wenig Aktionen zählen nicht)."),
             ("Crunchtime Ø", "HPI-Beitrag in den Schlussminuten enger Spiele (HBL-Wert)."),
             ("Gegner Gegentore/Sp", "Wie viele Tore der nächste Gegner im Schnitt kassiert – hoch = gutes Matchup für Angreifer.")]
     for r, (a, b) in enumerate(info, 1):
@@ -657,6 +702,7 @@ a{color:var(--acc)}
     <option value="0">alle Spieler</option><option value="1">≥1 Spiel</option><option value="3" selected>≥3 Spiele</option>
     <option value="5">≥5 Spiele</option>
   </select>
+  <select id="md" title="Nur Spieler mit HPI-Wert an diesem Spieltag"><option value="">Alle Spieltage</option></select>
 </div>
 <div class="tabs" id="tabs"></div>
 <div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
@@ -728,6 +774,7 @@ const COLS = {
   next:{h:"Nächster",cls:"tl",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>nextTxt(p)},
   next_rank:{h:"Geg.-Pl.",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>p.next.length?f0(p.next[0].opp_rank):"–"},
   next_ga:{h:"Geg. GT/Sp",v:p=>p.next.length?p.next[0].opp_ga_pg:null,r:p=>p.next.length?f1(p.next[0].opp_ga_pg):"–"},
+  md_hpi:{h:"HPI ST",v:p=>p.hpi_series[MD.indexOf(+$("#md").value)],r:p=>hpiCell(COLS.md_hpi.v(p))},
 };
 const VIEWS = {
   "Start7":    {cols:["name","hpi_avg","hpi_form3","hpi_form_delta","hpi_last","spark","hpi_std","hpi_md","min_pg","next","next_ga"], sort:"hpi_avg"},
@@ -744,15 +791,20 @@ const $=s=>document.querySelector(s);
 $("#sub").textContent = `${DATA.season} · Stand ${DATA.generated} · ${P.length} Spieler · HPI bis Spieltag ${MD[MD.length-1]??"–"}`;
 [...new Set(P.map(p=>p.team))].filter(Boolean).sort().forEach(t=>$("#team").insertAdjacentHTML("beforeend",`<option>${t}</option>`));
 ["TW","LA","RL","RM","RR","RA","KM"].forEach(p=>$("#pos").insertAdjacentHTML("beforeend",`<option value="${p}">${POSN[p]}</option>`));
+[...MD].reverse().forEach(m=>$("#md").insertAdjacentHTML("beforeend",`<option value="${m}">Spieltag ${m}${m===DATA.current_md?" (aktuell)":""}</option>`));
+$("#md").addEventListener("input",()=>{const m=$("#md").value; COLS.md_hpi.h="HPI ST "+m;
+  if(m){sortKey="md_hpi"; sortDir=-1;} else if(sortKey==="md_hpi"){sortKey=VIEWS[view].sort; sortDir=-1;}});
 Object.keys(VIEWS).forEach(v=>$("#tabs").insertAdjacentHTML("beforeend",`<button data-v="${v}">${v}</button>`));
 $("#tabs").onclick=e=>{const b=e.target.closest("button"); if(!b) return; view=b.dataset.v; sortKey=VIEWS[view].sort; sortDir=-1;
   if(VIEWS[view].pos) $("#pos").value=VIEWS[view].pos; else if($("#pos").value==="TW" && view!=="Torhüter") $("#pos").value="";
   if(VIEWS[view].minmd!=null && +$("#minmd").value<VIEWS[view].minmd) $("#minmd").value=String(VIEWS[view].minmd); render();};
-["q","team","pos","minmd"].forEach(id=>$("#"+id).addEventListener("input",render));
+["q","team","pos","minmd","md"].forEach(id=>$("#"+id).addEventListener("input",render));
 function render(){
   document.querySelectorAll("#tabs button").forEach(b=>b.classList.toggle("on",b.dataset.v===view));
-  const V=VIEWS[view], q=$("#q").value.trim().toLowerCase(), tm=$("#team").value, ps=$("#pos").value, mn=+$("#minmd").value;
-  let rows=P.filter(p=>(!q||(p.name+" "+p.team).toLowerCase().includes(q))&&(!tm||p.team===tm)&&(!ps||p.pos===ps)&&((p.games||0)>=mn||(p.hpi_md||0)>=mn));
+  const q=$("#q").value.trim().toLowerCase(), tm=$("#team").value, ps=$("#pos").value, mn=+$("#minmd").value, md=$("#md").value;
+  const V={...VIEWS[view]}; if(md) V.cols=[V.cols[0],"md_hpi",...V.cols.slice(1)];
+  if(!V.cols.includes(sortKey)) sortKey=V.sort;
+  let rows=P.filter(p=>(!q||(p.name+" "+p.team).toLowerCase().includes(q))&&(!tm||p.team===tm)&&(!ps||p.pos===ps)&&((p.games||0)>=mn||(p.hpi_md||0)>=mn)&&(!md||COLS.md_hpi.v(p)!=null));
   const c=COLS[sortKey]; rows.sort((a,b)=>{const x=c.v(a),y=c.v(b); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*sortDir;});
   $("#tbl thead").innerHTML="<tr>"+V.cols.map(k=>`<th data-k="${k}" class="${(COLS[k].cls||"")+(k===sortKey?" sorted":"")}">${COLS[k].h}${k===sortKey?(sortDir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr>";
   $("#tbl tbody").innerHTML = rows.length ? rows.map(p=>`<tr data-id="${p.id}|${p.team_id}">`+V.cols.map(k=>`<td class="${COLS[k].cls||""}">${(COLS[k].r||(p=>f0(COLS[k].v(p))))(p)}</td>`).join("")+"</tr>").join("")
@@ -768,11 +820,15 @@ function bigChart(s){ const w=600,h=180,l=28,b=22; const pts=s.map((v,i)=>[i,v])
   const d=path(s,x,y);
   const dots=pts.map(p=>`<circle cx="${x(p[0])}" cy="${y(p[1])}" r="4" fill="${hpiColor(p[1])}" stroke="var(--card)" stroke-width="1.5"><title>ST ${MD[p[0]]}: ${f1(p[1])}</title></circle><text x="${x(p[0])}" y="${y(p[1])-8}" font-size="10" text-anchor="middle" fill="currentColor">${Math.round(p[1])}</text>`).join("");
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img" aria-label="HPI-Verlauf">${g}<path d="${d}" fill="none" stroke="var(--acc)" stroke-width="2"/>${dots}</svg><div class="small mut">x: Spieltag · y: HPI (Lücke = kein Einsatz/kein Wert)</div>`; }
+function lastTxt(g){ if(!g) return '<span class="mut">–</span>';
+  const ago=g.days<=0?"heute":g.days===1?"gestern":`vor ${g.days} Tagen`;
+  return `<b>${g.date}</b> (${ago}) · ST ${g.round} · ${g.home?"Heim":"Auswärts"} gegen ${g.opp_name} ${f0(g.home?g.gf:g.ga)}:${f0(g.home?g.ga:g.gf)} · HPI ${hpiCell(g.hpi)}`; }
 function kpi(label,val){return `<div class="kpi"><b>${val}</b><span>${label}</span></div>`;}
 function detail(p){ if(!p) return; const gk=p.pos==="TW";
   const nx=p.next.map(n=>`<li>${n.date}: ${n.home?"Heim":"Auswärts"} gegen <b>${n.opp_name}</b> (Pl. ${f0(n.opp_rank)}, ${f1(n.opp_ga_pg)} Gegentore/Sp)</li>`).join("")||"<li>–</li>";
   $("#dlgc").innerHTML=`<button class="close" onclick="dlg.close()" aria-label="Schließen">×</button>
   <h2>${p.name}</h2><div class="mut">${p.team} · ${POSN[p.pos]||p.pos}${p.age?` · ${p.age} J.`:""}${p.nat?` · ${p.nat}`:""}${p.height?` · ${p.height} cm`:""}</div>
+  <div class="small" style="margin-top:6px">Letztes Spiel: ${lastTxt(p.last_game)}</div>
   <div class="sect">HPI-Verlauf</div>${bigChart(p.hpi_series)}
   <div class="grid">${kpi("Ø HPI",hpiCell(p.hpi_avg))}${kpi("Form (letzte 3)",hpiCell(p.hpi_form3))}${kpi("Δ Form",delta(p.hpi_form_delta))}${kpi("Letzter "+trend(p.hpi_trend),hpiCell(p.hpi_last))}
   ${kpi("Max",f1(p.hpi_max))}${kpi("Streuung σ",f1(p.hpi_std))}${kpi("HPI-Spiele",f0(p.hpi_md))}${kpi("Ø ohne 7m",f1(p.hpi_avg_ex7m))}${kpi("Ø Vorsaison",hpiCell(p.hpi_prev))}${kpi("Crunchtime Ø",f1(p.crunch_avg))}</div>
@@ -816,8 +872,11 @@ def main(argv=None) -> int:
     now = dt.datetime.fromisoformat(a.now).astimezone(dt.timezone.utc) if a.now else dt.datetime.now(dt.timezone.utc)
     teams = build_teams(raw, now)
     players, md_numbers = build_players(raw, teams, now.date())
+    done = [x for t in teams.values() for x in t["fixtures"]
+            if x["status"] == "CONFIRMED" and x["start"] and str(x["round"]).isdigit()]
+    current_md = int(max(done, key=lambda x: x["start"])["round"]) if done else None
     meta = dict(season=raw["hpi_cur"]["name"], generated=now.astimezone(TZ).strftime("%d.%m.%Y %H:%M"),
-                synergy_season=raw["synergy_season"])
+                synergy_season=raw["synergy_season"], current_md=current_md)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)

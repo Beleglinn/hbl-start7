@@ -42,7 +42,9 @@ fest vorgeben), `--from-dump raw` (offline aus Rohdaten bauen).
 | Ø HPI | Saisonschnitt des HPI (0–100) – Grundlage der Start7-Punkte |
 | Form | Ø HPI der letzten 3 Spieltage mit Wert |
 | Δ Form | Form minus Saisonschnitt (positiv = im Aufwind) |
-| Letzter ▲▼ | HPI des letzten Spiels und Trend laut HBL |
+| Letzter ▲▼ | HPI des letzten Spiels (nach Datum, verlegte Spieltage berücksichtigt) und Trend zum vorherigen Spiel |
+| Letztes Spiel | Datum, Gegner und Ergebnis des jüngsten Spiels mit HPI-Wert (Detailansicht & Excel) |
+| Spieltag-Filter | Zeigt nur Spieler mit HPI-Wert an diesem Spieltag und sortiert nach diesem Wert |
 | σ | Streuung des HPI – klein = konstant, groß = Wundertüte |
 | HPI-Sp | Spiele mit HPI-Wert (HBL-Rangliste verlangt mindestens 5) |
 | Ø o.7m | HPI ohne Siebenmeter-Aktionen |
