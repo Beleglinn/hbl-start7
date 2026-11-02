@@ -2,3 +2,4 @@ site/
 raw/
 __pycache__/
 *.pyc
+*:Zone.Identifier
