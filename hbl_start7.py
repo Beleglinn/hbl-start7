@@ -779,6 +779,7 @@ tbody tr:hover td{background:var(--chip)}
 .up{color:var(--up)}.down{color:var(--down)}.mut{color:var(--mut)}
 .small{font-size:12px}
 svg.spark{vertical-align:middle}
+.hint{padding:0 16px 8px}
 .empty{padding:30px;text-align:center;color:var(--mut)}
 dialog{border:none;border-radius:14px;padding:0;width:min(640px,96vw);max-height:92vh;background:var(--card);color:var(--fg)}
 dialog::backdrop{background:rgba(0,0,0,.55)}
@@ -807,11 +808,12 @@ a{color:var(--acc)}
   <select id="md" title="Nur Spieler mit HPI-Wert an diesem Spieltag"><option value="">Alle Spieltage</option></select>
 </div>
 <div class="tabs" id="tabs"></div>
+<div class="hint small mut" id="hint"></div>
 <div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="tabs"><span class="small mut" id="count"></span></div>
 <footer>
   Daten: <a href="https://www.opel-hbl.de/de/hbl/statistiken">opel-hbl.de</a> &amp; <a href="https://hpi.handball-bundesliga.de">HPI der HBL</a>.
-  Spalten antippen zum Sortieren, Zeile antippen für Details &amp; HPI-Verlauf.
+  Spalten antippen zum Sortieren (Erklärung erscheint über der Tabelle, am PC auch beim Überfahren), Zeile antippen für Details &amp; HPI-Verlauf.
   <a href="hbl_start7.xlsx">Excel herunterladen</a>.
   <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners. ≈S7 = Start7-Punkte, aus der Saisonstatistik geschätzt (nicht die offiziellen App-Werte).
 </footer>
@@ -835,50 +837,50 @@ function spark(s, w=90, h=24){ const pts=s.map((v,i)=>[i,v]).filter(p=>p[1]!=nul
 const nextTxt = p => p.next.length ? `${p.next[0].home?'H':'A'} ${p.next[0].opp}` : '–';
 
 const COLS = {
-  name:{h:"Spieler",cls:"tl",v:p=>p.last,r:p=>`${p.name}<div class="small mut">${p.team_abbr} · <span class="pos">${p.pos}</span></div>`},
-  pos:{h:"Pos",v:p=>"TWLARLRMRRRAKM?".indexOf(p.pos),r:p=>`<span class="pos">${p.pos}</span>`},
-  team_abbr:{h:"Team",cls:"tl",v:p=>p.team_abbr},
-  hpi_avg:{h:"Ø HPI",v:p=>p.hpi_avg,r:p=>hpiCell(p.hpi_avg)},
-  hpi_form3:{h:"Form",v:p=>p.hpi_form3,r:p=>hpiCell(p.hpi_form3)},
-  hpi_form_delta:{h:"Δ Form",v:p=>p.hpi_form_delta,r:p=>delta(p.hpi_form_delta)},
-  hpi_last:{h:"Letzter",v:p=>p.hpi_last,r:p=>hpiCell(p.hpi_last)+" "+trend(p.hpi_trend)},
-  spark:{h:"Verlauf",v:p=>p.hpi_form3,r:p=>spark(p.hpi_series)},
-  hpi_max:{h:"Max",v:p=>p.hpi_max,r:p=>f1(p.hpi_max)},
-  hpi_std:{h:"σ",v:p=>p.hpi_std,r:p=>f1(p.hpi_std)},
-  hpi_md:{h:"HPI-Sp",v:p=>p.hpi_md,r:p=>f0(p.hpi_md)},
-  hpi_avg_ex7m:{h:"Ø o.7m",v:p=>p.hpi_avg_ex7m,r:p=>f1(p.hpi_avg_ex7m)},
-  hpi_prev:{h:"Ø Vorsaison",v:p=>p.hpi_prev,r:p=>hpiCell(p.hpi_prev)},
-  crunch_avg:{h:"Crunch",v:p=>p.crunch_avg,r:p=>f1(p.crunch_avg)},
-  s7_pts:{h:"≈S7 Pkt",v:p=>p.s7_pts,r:p=>f0(p.s7_pts)},
-  s7_pg:{h:"≈S7/Sp",v:p=>p.s7_pg,r:p=>f1(p.s7_pg)},
-  games:{h:"Sp",v:p=>p.games,r:p=>f0(p.games)},
-  min_pg:{h:"Min/Sp",v:p=>p.min_pg,r:p=>f1(p.min_pg)},
-  goals:{h:"Tore",v:p=>p.goals,r:p=>f0(p.goals)},
-  goals_pg:{h:"T/Sp",v:p=>p.goals_pg,r:p=>f1(p.goals_pg)},
-  shots:{h:"Würfe",v:p=>p.shots,r:p=>f0(p.shots)},
-  acc:{h:"Quote",v:p=>p.acc,r:p=>p.acc==null?"–":f1(p.acc)+"%"},
-  g7:{h:"7m",v:p=>p.g7,r:p=>f0(p.g7)},
-  acc7:{h:"7m %",v:p=>p.acc7,r:p=>p.acc7==null?"–":f1(p.acc7)+"%"},
-  g_fb:{h:"Gegenst.",v:p=>p.g_fb,r:p=>f0(p.g_fb)},
-  assists:{h:"Assists",v:p=>p.assists,r:p=>f0(p.assists)},
-  assists_pg:{h:"A/Sp",v:p=>p.assists_pg,r:p=>f1(p.assists_pg)},
-  steals:{h:"Steals",v:p=>p.steals,r:p=>f0(p.steals)},
-  blocks:{h:"Blocks",v:p=>p.blocks,r:p=>f0(p.blocks)},
-  tf:{h:"TF",v:p=>p.tf,r:p=>f0(p.tf)},
-  tf_pg:{h:"TF/Sp",v:p=>p.tf_pg,r:p=>f1(p.tf_pg)},
-  two_min:{h:"2'",v:p=>p.two_min,r:p=>f0(p.two_min)},
-  red:{h:"Rot",v:p=>p.red,r:p=>f0(p.red)},
-  saves:{h:"Paraden",v:p=>p.saves,r:p=>f0(p.saves)},
-  saves_pg:{h:"Par/Sp",v:p=>p.saves_pg,r:p=>f1(p.saves_pg)},
-  save_pct:{h:"Par %",v:p=>p.save_pct,r:p=>p.save_pct==null?"–":f1(p.save_pct)+"%"},
-  ga:{h:"Gegentore",v:p=>p.ga,r:p=>f0(p.ga)},
-  save7_pct:{h:"7m %",v:p=>p.save7_pct,r:p=>p.save7_pct==null?"–":f1(p.save7_pct)+"%"},
-  dist_km:{h:"km",v:p=>p.dist_km,r:p=>f1(p.dist_km)},
-  speed_kmh:{h:"km/h",v:p=>p.speed_kmh,r:p=>f1(p.speed_kmh)},
-  next:{h:"Nächster",cls:"tl",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>nextTxt(p)},
-  next_rank:{h:"Geg.-Pl.",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>p.next.length?f0(p.next[0].opp_rank):"–"},
-  next_ga:{h:"Geg. GT/Sp",v:p=>p.next.length?p.next[0].opp_ga_pg:null,r:p=>p.next.length?f1(p.next[0].opp_ga_pg):"–"},
-  md_hpi:{h:"HPI ST",v:p=>p.hpi_series[MD.indexOf(+$("#md").value)],r:p=>hpiCell(COLS.md_hpi.v(p))},
+  name:{h:"Spieler",t:"Spielername; darunter Vereinskürzel und Position. Sortiert nach Nachname.",cls:"tl",v:p=>p.last,r:p=>`${p.name}<div class="small mut">${p.team_abbr} · <span class="pos">${p.pos}</span></div>`},
+  pos:{h:"Pos",t:"Position: TW Torwart, LA/RA Links-/Rechtsaußen, RL/RM/RR Rückraum links/Mitte/rechts, KM Kreis.",v:p=>"TWLARLRMRRRAKM?".indexOf(p.pos),r:p=>`<span class="pos">${p.pos}</span>`},
+  team_abbr:{h:"Team",t:"Kürzel des Vereins.",cls:"tl",v:p=>p.team_abbr},
+  hpi_avg:{h:"Ø HPI",t:"Saisondurchschnitt des Handball Performance Index (0–100) laut HBL über alle Spieltage mit HPI-Wert.",v:p=>p.hpi_avg,r:p=>hpiCell(p.hpi_avg)},
+  hpi_form3:{h:"Form",t:"Form: Durchschnitt der letzten 3 Spiele mit HPI-Wert (nach Spieldatum).",v:p=>p.hpi_form3,r:p=>hpiCell(p.hpi_form3)},
+  hpi_form_delta:{h:"Δ Form",t:"Form minus Saisonschnitt: positiv = aktuell besser als im Saisonschnitt (im Aufwind).",v:p=>p.hpi_form_delta,r:p=>delta(p.hpi_form_delta)},
+  hpi_last:{h:"Letzter",t:"HPI des letzten Spiels mit HPI-Wert; Pfeil = Trend gegenüber dem Spiel davor.",v:p=>p.hpi_last,r:p=>hpiCell(p.hpi_last)+" "+trend(p.hpi_trend)},
+  spark:{h:"Verlauf",t:"HPI-Verlauf über alle Spieltage (nach Datum, Lücke = kein Wert). Sortiert nach Form.",v:p=>p.hpi_form3,r:p=>spark(p.hpi_series)},
+  hpi_max:{h:"Max",t:"Höchster HPI-Wert eines einzelnen Spieltags in dieser Saison (HBL-Wert).",v:p=>p.hpi_max,r:p=>f1(p.hpi_max)},
+  hpi_std:{h:"σ",t:"Streuung (Standardabweichung) des HPI: klein = konstant, groß = schwankend.",v:p=>p.hpi_std,r:p=>f1(p.hpi_std)},
+  hpi_md:{h:"HPI-Sp",t:"Anzahl Spieltage mit HPI-Wert (genug Aktionen); die HBL-Rangliste verlangt mindestens 5.",v:p=>p.hpi_md,r:p=>f0(p.hpi_md)},
+  hpi_avg_ex7m:{h:"Ø o.7m",t:"Saisonschnitt des HPI ohne Siebenmeter-Aktionen (HBL-Wert).",v:p=>p.hpi_avg_ex7m,r:p=>f1(p.hpi_avg_ex7m)},
+  hpi_prev:{h:"Ø Vorsaison",t:"HPI-Saisonschnitt der Vorsaison zum Vergleich.",v:p=>p.hpi_prev,r:p=>hpiCell(p.hpi_prev)},
+  crunch_avg:{h:"Crunch",t:"Crunchtime-Wert der HBL: HPI-Beitrag in der Schlussphase enger Spiele.",v:p=>p.crunch_avg,r:p=>f1(p.crunch_avg)},
+  s7_pts:{h:"≈S7 Pkt",t:"Start7-Punkte der Saison, aus der Saisonstatistik nach der Start7-Punktetabelle geschätzt (nicht die App-Werte, Abweichung meist ±10–20 %).",v:p=>p.s7_pts,r:p=>f0(p.s7_pts)},
+  s7_pg:{h:"≈S7/Sp",t:"Geschätzte Start7-Punkte pro Spiel (Saisonpunkte geteilt durch Spiele).",v:p=>p.s7_pg,r:p=>f1(p.s7_pg)},
+  games:{h:"Sp",t:"Spiele mit Einsatz laut Saisonstatistik.",v:p=>p.games,r:p=>f0(p.games)},
+  min_pg:{h:"Min/Sp",t:"Durchschnittliche Spielzeit auf dem Feld pro Spiel in Minuten.",v:p=>p.min_pg,r:p=>f1(p.min_pg)},
+  goals:{h:"Tore",t:"Tore in der Saison (inkl. Siebenmeter).",v:p=>p.goals,r:p=>f0(p.goals)},
+  goals_pg:{h:"T/Sp",t:"Tore pro Spiel.",v:p=>p.goals_pg,r:p=>f1(p.goals_pg)},
+  shots:{h:"Würfe",t:"Torwürfe in der Saison (inkl. Siebenmeter).",v:p=>p.shots,r:p=>f0(p.shots)},
+  acc:{h:"Quote",t:"Wurfquote: Tore geteilt durch Würfe in Prozent.",v:p=>p.acc,r:p=>p.acc==null?"–":f1(p.acc)+"%"},
+  g7:{h:"7m",t:"Siebenmeter-Tore.",v:p=>p.g7,r:p=>f0(p.g7)},
+  acc7:{h:"7m %",t:"Siebenmeter-Quote: verwandelte geteilt durch geworfene Siebenmeter in Prozent.",v:p=>p.acc7,r:p=>p.acc7==null?"–":f1(p.acc7)+"%"},
+  g_fb:{h:"Gegenst.",t:"Tore aus dem Tempogegenstoß.",v:p=>p.g_fb,r:p=>f0(p.g_fb)},
+  assists:{h:"Assists",t:"Torvorlagen (Assists) in der Saison.",v:p=>p.assists,r:p=>f0(p.assists)},
+  assists_pg:{h:"A/Sp",t:"Assists pro Spiel.",v:p=>p.assists_pg,r:p=>f1(p.assists_pg)},
+  steals:{h:"Steals",t:"Ballgewinne (Steals) in der Saison.",v:p=>p.steals,r:p=>f0(p.steals)},
+  blocks:{h:"Blocks",t:"Geblockte Würfe in der Saison.",v:p=>p.blocks,r:p=>f0(p.blocks)},
+  tf:{h:"TF",t:"Technische Fehler (eigene Ballverluste) in der Saison.",v:p=>p.tf,r:p=>f0(p.tf)},
+  tf_pg:{h:"TF/Sp",t:"Technische Fehler pro Spiel.",v:p=>p.tf_pg,r:p=>f1(p.tf_pg)},
+  two_min:{h:"2'",t:"Zeitstrafen (2 Minuten) in der Saison.",v:p=>p.two_min,r:p=>f0(p.two_min)},
+  red:{h:"Rot",t:"Rote Karten in der Saison.",v:p=>p.red,r:p=>f0(p.red)},
+  saves:{h:"Paraden",t:"Paraden des Torwarts in der Saison (inkl. Siebenmeter).",v:p=>p.saves,r:p=>f0(p.saves)},
+  saves_pg:{h:"Par/Sp",t:"Paraden pro Spiel.",v:p=>p.saves_pg,r:p=>f1(p.saves_pg)},
+  save_pct:{h:"Par %",t:"Paradenquote: Paraden geteilt durch (Paraden + Gegentore) in Prozent.",v:p=>p.save_pct,r:p=>p.save_pct==null?"–":f1(p.save_pct)+"%"},
+  ga:{h:"Gegentore",t:"Gegentore als Torwart in der Saison.",v:p=>p.ga,r:p=>f0(p.ga)},
+  save7_pct:{h:"7m %",t:"Gehaltene Siebenmeter in Prozent der Siebenmeter gegen ihn.",v:p=>p.save7_pct,r:p=>p.save7_pct==null?"–":f1(p.save7_pct)+"%"},
+  dist_km:{h:"km",t:"Gesamte Laufstrecke der Saison in Kilometern (Tracking-Daten).",v:p=>p.dist_km,r:p=>f1(p.dist_km)},
+  speed_kmh:{h:"km/h",t:"Höchste gemessene Geschwindigkeit der Saison in km/h (Tracking-Daten).",v:p=>p.speed_kmh,r:p=>f1(p.speed_kmh)},
+  next:{h:"Nächster",t:"Nächstes Spiel: H = Heim, A = Auswärts, gegen Vereinskürzel. Sortiert nach Tabellenplatz des Gegners.",cls:"tl",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>nextTxt(p)},
+  next_rank:{h:"Geg.-Pl.",t:"Aktueller Tabellenplatz des nächsten Gegners.",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>p.next.length?f0(p.next[0].opp_rank):"–"},
+  next_ga:{h:"Geg. GT/Sp",t:"Gegentore pro Spiel des nächsten Gegners: hoch = gutes Matchup für Angreifer.",v:p=>p.next.length?p.next[0].opp_ga_pg:null,r:p=>p.next.length?f1(p.next[0].opp_ga_pg):"–"},
+  md_hpi:{h:"HPI ST",t:"HPI-Wert des Spielers am gewählten Spieltag.",v:p=>p.hpi_series[MD.indexOf(+$("#md").value)],r:p=>hpiCell(COLS.md_hpi.v(p))},
 };
 const VIEWS = {
   "Start7":    {cols:["name","s7_pg","hpi_avg","hpi_form3","hpi_form_delta","hpi_last","spark","hpi_std","hpi_md","min_pg","next","next_ga"], sort:"hpi_avg"},
@@ -911,10 +913,11 @@ function render(){
   if(!V.cols.includes(sortKey)) sortKey=V.sort;
   let rows=P.filter(p=>(!q||(p.name+" "+p.team).toLowerCase().includes(q))&&(!tm||p.team===tm)&&(!ps||p.pos===ps)&&((p.games||0)>=mn||(p.hpi_md||0)>=mn)&&(!md||COLS.md_hpi.v(p)!=null));
   const c=COLS[sortKey]; rows.sort((a,b)=>{const x=c.v(a),y=c.v(b); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*sortDir;});
-  $("#tbl thead").innerHTML="<tr>"+V.cols.map(k=>`<th data-k="${k}" class="${(COLS[k].cls||"")+(k===sortKey?" sorted":"")}">${COLS[k].h}${k===sortKey?(sortDir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr>";
+  $("#tbl thead").innerHTML="<tr>"+V.cols.map(k=>`<th data-k="${k}" title="${COLS[k].t}" class="${(COLS[k].cls||"")+(k===sortKey?" sorted":"")}">${COLS[k].h}${k===sortKey?(sortDir<0?" ↓":" ↑"):""}</th>`).join("")+"</tr>";
   $("#tbl tbody").innerHTML = rows.length ? rows.map(p=>`<tr data-id="${p.id}|${p.team_id}">`+V.cols.map(k=>`<td class="${COLS[k].cls||""}">${(COLS[k].r||(p=>f0(COLS[k].v(p))))(p)}</td>`).join("")+"</tr>").join("")
     : `<tr><td colspan="${V.cols.length}" class="empty">Keine Spieler gefunden</td></tr>`;
   $("#count").textContent=`${rows.length} Spieler`;
+  $("#hint").textContent=`${COLS[sortKey].h}: ${COLS[sortKey].t}`;
 }
 $("#tbl thead").onclick=e=>{const th=e.target.closest("th"); if(!th) return; const k=th.dataset.k; if(k===sortKey) sortDir*=-1; else {sortKey=k; sortDir=k==="name"||k==="team_abbr"||k==="next_rank"?1:-1;} render();};
 $("#tbl tbody").onclick=e=>{const tr=e.target.closest("tr[data-id]"); if(!tr) return; const [id,tid]=tr.dataset.id.split("|"); detail(P.find(p=>p.id===id&&String(p.team_id)===tid));};

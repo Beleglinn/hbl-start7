@@ -38,7 +38,8 @@ Syntaxfehler fallen erst im Browser auf – nach Änderungen das `<script>` der 
 5. `write_html` (JSON wird als `__DATA__` in `HTML_TEMPLATE` eingesetzt), `write_excel` (`COLUMNS` steuert das
    Blatt *Spieler*), `players.json`.
 
-Frontend: Spalten sind in `COLS` definiert (`v` = Sortierwert, `r` = Rendering), Reiter in `VIEWS`. Neue Kennzahl =
+Frontend: Spalten sind in `COLS` definiert (`h` = Überschrift, `t` = Beschreibung für Tooltip und Erklärzeile über
+der Tabelle – Pflicht, ohne doppelte Anführungszeichen, `v` = Sortierwert, `r` = Rendering), Reiter in `VIEWS`. Neue Kennzahl =
 Feld in `build_players` + Eintrag in `COLS`/`VIEWS` + ggf. `COLUMNS` (Excel) + Zeile in der README-Tabelle.
 
 ## Daten-Fallstricke (alle schon einmal Ursache von Fehlern)
@@ -56,7 +57,7 @@ Feld in `build_players` + Eintrag in `COLS`/`VIEWS` + ggf. `COLUMNS` (Excel) + Z
 ## Start7-Punkte (geschätzt)
 
 Die echten Punkte gibt es nur in der App (keine öffentliche API). `start7_points` schätzt sie aus der
-Saisonstatistik nach der offiziellen Tabelle (https://start7.de/spielregeln/punkteberechnung/), hinterlegt als
+Saisonstatistik nach der offiziellen Tabelle (<https://start7.de/spielregeln/punkteberechnung/>), hinterlegt als
 `S7_SHOT`, `S7_SAVE`, `S7_EVENT`, `S7_OFF_TARGET`. Ligaweite Hilfswerte liefert `s7_league` (Ø Assist-Punkte,
 Fehlwürfe neben das Tor je Parade). Kalibriert mit 14 App-Werten nach ST 11/2026-27 (Tore ohne Wurfart = 8 Punkte);
 Abweichung meist ±10–20 %. Abwehrspezialisten werden unterschätzt (Offensivfouls, Stopfouls, 7 m verursacht fehlen
