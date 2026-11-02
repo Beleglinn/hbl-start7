@@ -50,6 +50,7 @@ fest vorgeben), `--from-dump raw` (offline aus Rohdaten bauen).
 | Ø o.7m | HPI ohne Siebenmeter-Aktionen |
 | Ø Vorsaison | HPI-Schnitt der Vorsaison zum Vergleich |
 | Crunch | Crunchtime-Wert der HBL (Schlussphase enger Spiele) |
+| ≈S7 Pkt, ≈S7/Sp | Start7-Punkte, nach der [offiziellen Punktetabelle](https://start7.de/spielregeln/punkteberechnung/) aus der Saisonstatistik geschätzt. Nicht erfasst: 7 m verursacht, Offensivfouls, Stopfouls (Abwehrspezialisten werden daher unterschätzt). Assists nach Torverteilung der Liga gewichtet, Tore ohne Wurfart mit 8 Punkten, Fehlwürfe neben das Tor (Außen/Gegenstoß/7 m) anteilig als Torwart-Parade. Abgleich mit 14 App-Werten nach ST 11: meist ±10–20 %. Tabelle als `S7_*`-Konstanten im Skript. |
 | Nächster / Geg. GT/Sp | Nächster Gegner (H/A) und dessen Gegentore pro Spiel – hoch = gutes Matchup für Angreifer |
 
 Ansichten: *Start7*, *HPI*, *Aufsteiger* (größtes Δ Form), *Angriff*, *Abwehr*, *Torhüter*, *Tracking*, *Gegner*.

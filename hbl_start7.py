@@ -60,6 +60,18 @@ ROSTER_POS = {"G": "TW", "GK": "TW", "LW": "LA", "RW": "RA", "LB": "RL", "RB": "
               "CB": "RM", "P": "KM", "PV": "KM", "LP": "KM", "PIV": "KM"}
 POS_ORDER = ["TW", "LA", "RL", "RM", "RR", "RA", "KM", "?"]
 
+# Start7-Punkte je Aktion laut https://start7.de/spielregeln/punkteberechnung/
+# Wurfarten der Statistik -> (Tor, Assist, Fehlwurf). Tore ohne Wurfart sind eine Mischung aus 6 m (6) und
+# "Unbekannt" (10); 8 Punkte passen am besten zu App-Werten (Abgleich mit 12 Feldspielern nach ST 11, 2026/27).
+S7_SHOT = {"wing": (7, 3, -7), "backCourt": (7, 3, -6), "nineMetre": (10, 0, -4), "pivot": (6, 4, -7),
+           "fastBreak": (5, 5, -8), "sevenMetre": (6, 4, -8), "other": (8, 4, -7)}
+# Torwart: Wurfart -> (Parade, Gegentor)
+S7_SAVE = {"Wing": (7, -3), "BackCourt": (9, -1), "NineMetre": (7, -3), "Pivot": (8, -2),
+           "FastBreak": (8, -2), "SevenMetre": (8, -2), "other": (7, -3)}
+# Fehlwuerfe neben/an das Tor zaehlen bei diesen Wurfarten fuer den Torwart als Parade (Wurfart Feld -> Torwart)
+S7_OFF_TARGET = {"wing": "Wing", "fastBreak": "FastBreak", "sevenMetre": "SevenMetre"}
+S7_EVENT = dict(block=7, steal=8, tf=-6, red=-12, two_min=(-3, -4, -6))
+
 
 def log(msg: str) -> None:
     print(f"[{dt.datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
@@ -321,6 +333,88 @@ def build_teams(raw: dict, now: dt.datetime) -> dict:
     return {t["id"]: t for t in ranked}
 
 
+def shots_from(made, acc) -> float | None:
+    """Versuche aus Erfolgen und Quote in % (None, wenn nicht ableitbar)"""
+    return made / (acc / 100) if made and acc else (0.0 if acc is None else None)
+
+
+def s7_league(stats_fp: dict, stats_gk: dict) -> dict:
+    """Ligawerte fuer die Schaetzung:
+    assist   – Ø Assist-Punkte (Assists sind nicht nach Wurfart aufgeteilt -> nach Torverteilung gewichten)
+    off      – Fehlwuerfe ohne Parade je Torwart-Parade und Wurfart (zaehlen in Start7 als Parade)"""
+    goals = dict.fromkeys(S7_SHOT, 0)
+    misses = dict.fromkeys(S7_OFF_TARGET, 0.0)
+    for s in stats_fp.values():
+        typed = 0
+        for t in S7_SHOT:
+            if t != "other":
+                made = s.get(f"{t}GoalsScored") or 0
+                goals[t] += made
+                typed += made
+                if t in misses:
+                    att = shots_from(made, s.get(f"{t}ShootingAccuracy"))
+                    misses[t] += max(att - made, 0) if att is not None else 0
+        goals["other"] += max((s.get("goalsScored") or 0) - typed, 0)
+    total = sum(goals.values())
+    off = {}
+    for t, gt in S7_OFF_TARGET.items():
+        saved = sum(s.get(f"goalKeeper{gt}ShotsSaved") or 0 for s in stats_gk.values())
+        off[gt] = max(misses[t] - saved, 0) / saved if saved else 0.0
+    return dict(assist=sum(goals[t] * S7_SHOT[t][1] for t in goals) / total if total else 3.0, off=off)
+
+
+def start7_points(sf: dict, sg: dict, games: int, league: dict) -> dict | None:
+    """Schaetzt die Start7-Saisonpunkte aus der Saisonstatistik.
+    Nicht enthalten (fehlen in den Daten): 7 m verursacht, Offensivfoul gezogen/verursacht, Stopfoul."""
+    if not games:
+        return None
+    # Angriff: Tore je Wurfart, Fehlwuerfe ueber die Quote; Rest auf "other" (6 m)
+    shots_pts = 0.0
+    goals_typed = misses_typed = 0.0
+    for t, (pg, _, pm) in S7_SHOT.items():
+        if t == "other":
+            continue
+        made = sf.get(f"{t}GoalsScored") or 0
+        att = shots_from(made, sf.get(f"{t}ShootingAccuracy"))
+        miss = max(att - made, 0) if att is not None else 0
+        shots_pts += made * pg + miss * pm
+        goals_typed += made
+        misses_typed += miss
+    goals, shots = sf.get("goalsScored") or 0, sf.get("shots") or 0
+    pg, _, pm = S7_SHOT["other"]
+    shots_pts += max(goals - goals_typed, 0) * pg + max(shots - goals - misses_typed, 0) * pm
+    assists = (sf.get("assists") or 0) * league["assist"]
+    two = sf.get("twoMinuteSuspensions") or 0
+    m1, m2, m3 = S7_EVENT["two_min"]
+    # pro Spiel zaehlt die 1. Zeitstrafe -3, die 2. -4, die 3. -6; Verteilung auf Spiele unbekannt -> moeglichst gestreut
+    first = min(two, games)
+    second = min(two - first, games)
+    defense = ((sf.get("blocks") or 0) * S7_EVENT["block"] + (sf.get("steals") or 0) * S7_EVENT["steal"])
+    penalties = ((sf.get("technicalFaults") or 0) * S7_EVENT["tf"] + first * m1 + second * m2
+                 + (two - first - second) * m3 + max((sf.get("redCards") or 0) - (two - first - second), 0)
+                 * S7_EVENT["red"])
+    # Torwart: Paraden je Wurfart, Gegentore ueber die Quote; Rest auf "other"
+    keeper = 0.0
+    if sg.get("goalKeeperShotsSaved") or sg.get("goalKeeperGoalsAgainst"):
+        saves_typed = ga_typed = 0.0
+        for t, (ps, pga) in S7_SAVE.items():
+            if t == "other":
+                continue
+            saved = sg.get(f"goalKeeper{t}ShotsSaved") or 0
+            att = shots_from(saved, sg.get(f"goalKeeper{t}SaveAccuracy"))
+            ga = max(att - saved, 0) if att is not None else 0
+            # Fehlwuerfe neben das Tor: nach Ligaschnitt anteilig zu den Paraden gutschreiben
+            keeper += saved * (1 + league["off"].get(t, 0)) * ps + ga * pga
+            saves_typed += saved
+            ga_typed += ga
+        ps, pga = S7_SAVE["other"]
+        keeper += (max((sg.get("goalKeeperShotsSaved") or 0) - saves_typed, 0) * ps
+                   + max((sg.get("goalKeeperGoalsAgainst") or 0) - ga_typed, 0) * pga)
+    total = shots_pts + assists + defense + penalties + keeper
+    return dict(total=round(total), pg=round(total / games, 1), shots=round(shots_pts), assists=round(assists),
+                defense=round(defense), penalties=round(penalties), keeper=round(keeper))
+
+
 def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], list[int]]:
     # Gespielte Spiele je (Team, Spieltag). Spieltage koennen verlegt sein (z. B. ST 16 Ende September),
     # daher wird ueberall nach Datum statt nach Spieltagsnummer sortiert.
@@ -365,6 +459,7 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
     stats_gk = {(strip_ns(d["person"]["id"]), strip_ns(d["entity"]["id"])): d.get("statistics") or {}
                 for d in raw["gk"].get("data", [])}
 
+    s7_lg = s7_league(stats_fp, stats_gk)
     keys = set(stats_fp) | set(stats_gk)
     # Spieler mit HPI aber (noch) ohne Statistik ebenfalls aufnehmen
     for pid, r in hpi.items():
@@ -442,6 +537,7 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
                              home=last_fx["home"], gf=last_fx["gf"], ga=last_fx["ga"], hpi=series[rd])
 
         speed = sf.get("speedMax") if sf else sg.get("speedMax") if sg else None
+        s7 = start7_points(sf, sg, games, s7_lg)
         players.append(dict(
             id=pid, name=name, last=last_name, team=team.get("name") or ent.get("nameFullLocal") or "",
             team_abbr=team.get("abbr") or ent.get("codeLocal") or "", team_id=tid, team_rank=team.get("rank"),
@@ -456,6 +552,8 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
             hpi_prev=rnd(hp.get("avg")), hpi_prev_md=hp.get("matchdays"),
             hpi_series=[series.get(n) for n in md_numbers],
             crunch_avg=rnd((crunch.get(pid) or {}).get("avg")),
+            # Start7 (geschaetzt)
+            s7_pts=(s7 or {}).get("total"), s7_pg=(s7 or {}).get("pg"), s7=s7,
             # Basis
             games=games, minutes=minutes, min_pg=per_game(minutes, games, 1),
             goals=goals, goals_pg=per_game(goals, games),
@@ -500,6 +598,7 @@ COLUMNS = [  # key, header, width, group
     ("hpi_max", "Max HPI", 8, "HPI"), ("hpi_std", "Streuung (σ)", 9, "HPI"),
     ("hpi_md", "HPI-Spiele", 8, "HPI"), ("hpi_avg_ex7m", "Ø HPI ohne 7m", 9, "HPI"),
     ("hpi_prev", "Ø HPI Vorsaison", 9, "HPI"), ("crunch_avg", "Crunchtime Ø", 9, "HPI"),
+    ("s7_pts", "Start7-Pkt (geschätzt)", 10, "Start7"), ("s7_pg", "Start7-Pkt/Spiel", 9, "Start7"),
     ("games", "Spiele", 7, "Basis"), ("min_pg", "Min/Spiel", 8, "Basis"),
     ("goals", "Tore", 6, "Angriff"), ("goals_pg", "Tore/Spiel", 8, "Angriff"), ("shots", "Würfe", 6, "Angriff"),
     ("acc", "Quote %", 7, "Angriff"), ("g7", "7m-Tore", 7, "Angriff"), ("acc7", "7m %", 6, "Angriff"),
@@ -587,6 +686,7 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
     # Torhüter
     ws3 = wb.create_sheet("Torhüter")
     gcols = [("name", "Spieler", 24), ("team_abbr", "Team", 7), ("hpi_avg", "Ø HPI", 7), ("hpi_form3", "Form", 7),
+             ("s7_pts", "Start7-Pkt", 9), ("s7_pg", "Start7/Spiel", 9),
              ("games", "Spiele", 7), ("min_pg", "Min/Spiel", 8), ("saves", "Paraden", 8), ("saves_pg", "Paraden/Spiel", 9),
              ("save_pct", "Paraden %", 9), ("ga", "Gegentore", 9), ("saves7", "7m gehalten", 9), ("save7_pct", "7m %", 7),
              ("save_wing_pct", "Außen %", 8), ("save_back_pct", "Rückraum %", 9), ("save_fb_pct", "Gegenstoß %", 9),
@@ -629,6 +729,8 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
             ("HPI-Spiele", "Spieltage mit genug Aktionen für einen HPI-Wert (HBL-Ranking braucht 5)."),
             ("Letztes Spiel", "Jüngstes Spiel mit HPI-Wert des Spielers (Einsätze mit zu wenig Aktionen zählen nicht)."),
             ("Crunchtime Ø", "HPI-Beitrag in den Schlussminuten enger Spiele (HBL-Wert)."),
+            ("Start7-Pkt (geschätzt)", "Nach der Start7-Punktetabelle aus der Saisonstatistik nachgerechnet. Fehlen: 7 m "
+                                       "verursacht, Offensivfouls, Stopfouls; Wurfarten/Assists teils geschätzt."),
             ("Gegner Gegentore/Sp", "Wie viele Tore der nächste Gegner im Schnitt kassiert – hoch = gutes Matchup für Angreifer.")]
     for r, (a, b) in enumerate(info, 1):
         ws5.cell(row=r, column=1, value=a).font = Font(bold=True)
@@ -711,7 +813,7 @@ a{color:var(--acc)}
   Daten: <a href="https://www.opel-hbl.de/de/hbl/statistiken">opel-hbl.de</a> &amp; <a href="https://hpi.handball-bundesliga.de">HPI der HBL</a>.
   Spalten antippen zum Sortieren, Zeile antippen für Details &amp; HPI-Verlauf.
   <a href="hbl_start7.xlsx">Excel herunterladen</a>.
-  <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners.
+  <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners. ≈S7 = Start7-Punkte, aus der Saisonstatistik geschätzt (nicht die offiziellen App-Werte).
 </footer>
 <dialog id="dlg"><div class="dlg" id="dlgc"></div></dialog>
 <script>
@@ -747,6 +849,8 @@ const COLS = {
   hpi_avg_ex7m:{h:"Ø o.7m",v:p=>p.hpi_avg_ex7m,r:p=>f1(p.hpi_avg_ex7m)},
   hpi_prev:{h:"Ø Vorsaison",v:p=>p.hpi_prev,r:p=>hpiCell(p.hpi_prev)},
   crunch_avg:{h:"Crunch",v:p=>p.crunch_avg,r:p=>f1(p.crunch_avg)},
+  s7_pts:{h:"≈S7 Pkt",v:p=>p.s7_pts,r:p=>f0(p.s7_pts)},
+  s7_pg:{h:"≈S7/Sp",v:p=>p.s7_pg,r:p=>f1(p.s7_pg)},
   games:{h:"Sp",v:p=>p.games,r:p=>f0(p.games)},
   min_pg:{h:"Min/Sp",v:p=>p.min_pg,r:p=>f1(p.min_pg)},
   goals:{h:"Tore",v:p=>p.goals,r:p=>f0(p.goals)},
@@ -777,12 +881,13 @@ const COLS = {
   md_hpi:{h:"HPI ST",v:p=>p.hpi_series[MD.indexOf(+$("#md").value)],r:p=>hpiCell(COLS.md_hpi.v(p))},
 };
 const VIEWS = {
-  "Start7":    {cols:["name","hpi_avg","hpi_form3","hpi_form_delta","hpi_last","spark","hpi_std","hpi_md","min_pg","next","next_ga"], sort:"hpi_avg"},
+  "Start7":    {cols:["name","s7_pg","hpi_avg","hpi_form3","hpi_form_delta","hpi_last","spark","hpi_std","hpi_md","min_pg","next","next_ga"], sort:"hpi_avg"},
   "HPI":       {cols:["name","hpi_avg","hpi_form3","hpi_last","hpi_max","hpi_std","hpi_md","hpi_avg_ex7m","hpi_prev","crunch_avg","spark"], sort:"hpi_avg"},
   "Aufsteiger":{cols:["name","hpi_form_delta","hpi_form3","hpi_avg","hpi_last","spark","games","next"], sort:"hpi_form_delta", minmd:3},
   "Angriff":   {cols:["name","goals","goals_pg","shots","acc","g7","acc7","g_fb","assists","assists_pg","tf","hpi_avg"], sort:"goals"},
   "Abwehr":    {cols:["name","steals","blocks","two_min","red","tf_pg","min_pg","hpi_avg"], sort:"steals"},
-  "Torhüter":  {cols:["name","hpi_avg","hpi_form3","saves","saves_pg","save_pct","ga","save7_pct","games","min_pg","next","next_ga"], sort:"hpi_avg", pos:"TW"},
+  "Torhüter":  {cols:["name","s7_pg","hpi_avg","hpi_form3","saves","saves_pg","save_pct","ga","save7_pct","games","min_pg","next","next_ga"], sort:"hpi_avg", pos:"TW"},
+  "Punkte":    {cols:["name","s7_pts","s7_pg","hpi_avg","hpi_form3","games","min_pg","next","next_ga"], sort:"s7_pts"},
   "Tracking":  {cols:["name","dist_km","speed_kmh","min_pg","games","hpi_avg"], sort:"speed_kmh"},
   "Gegner":    {cols:["name","next","next_rank","next_ga","hpi_avg","hpi_form3"], sort:"next_ga"},
 };
@@ -832,6 +937,7 @@ function detail(p){ if(!p) return; const gk=p.pos==="TW";
   <div class="sect">HPI-Verlauf</div>${bigChart(p.hpi_series)}
   <div class="grid">${kpi("Ø HPI",hpiCell(p.hpi_avg))}${kpi("Form (letzte 3)",hpiCell(p.hpi_form3))}${kpi("Δ Form",delta(p.hpi_form_delta))}${kpi("Letzter "+trend(p.hpi_trend),hpiCell(p.hpi_last))}
   ${kpi("Max",f1(p.hpi_max))}${kpi("Streuung σ",f1(p.hpi_std))}${kpi("HPI-Spiele",f0(p.hpi_md))}${kpi("Ø ohne 7m",f1(p.hpi_avg_ex7m))}${kpi("Ø Vorsaison",hpiCell(p.hpi_prev))}${kpi("Crunchtime Ø",f1(p.crunch_avg))}</div>
+  <div class="sect">Start7-Punkte (geschätzt)</div>${p.s7?`<div class="grid">${kpi("Punkte",f0(p.s7.total))}${kpi("Pkt/Spiel",f1(p.s7.pg))}${kpi("Würfe",f0(p.s7.shots))}${kpi("Assists",f0(p.s7.assists))}${kpi("Abwehr",f0(p.s7.defense))}${kpi("Strafen/Fehler",f0(p.s7.penalties))}${gk?kpi("Torwart",f0(p.s7.keeper)):""}</div>`:'<p class="mut">–</p>'}
   <div class="sect">Statistik</div><div class="grid">
   ${kpi("Spiele",f0(p.games))}${kpi("Min/Spiel",f1(p.min_pg))}
   ${gk?kpi("Paraden",f0(p.saves))+kpi("Paraden %",f1(p.save_pct))+kpi("Paraden/Sp",f1(p.saves_pg))+kpi("Gegentore",f0(p.ga))+kpi("7m gehalten",`${f0(p.saves7)} (${f1(p.save7_pct)}%)`)+kpi("Außen %",f1(p.save_wing_pct))+kpi("Rückraum %",f1(p.save_back_pct)):""}
