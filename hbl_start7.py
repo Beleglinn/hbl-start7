@@ -854,17 +854,21 @@ HTML_TEMPLATE = r"""<!doctype html>
 :root{--bg:#f6f7f9;--card:#fff;--fg:#111827;--mut:#6b7280;--line:#e5e7eb;--acc:#2563eb;--up:#16a34a;--down:#dc2626;--chip:#eef2ff;--head:#0f172a}
 @media (prefers-color-scheme:dark){:root{--bg:#0b1020;--card:#121a2e;--fg:#e5e7eb;--mut:#94a3b8;--line:#22304d;--acc:#60a5fa;--up:#4ade80;--down:#f87171;--chip:#1e293b;--head:#020617}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-text-size-adjust:100%}
-header{background:var(--head);color:#fff;padding:14px 16px 10px;position:sticky;top:0;z-index:5}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-text-size-adjust:100%;
+  display:flex;flex-direction:column;height:100vh;height:100dvh}
+/* fester Rahmen: nur .wrap scrollt (beide Richtungen), damit Spaltenköpfe und Namensspalte stehen bleiben */
+body>*:not(.wrap){flex:none}
+header{background:var(--head);color:#fff;padding:14px 16px 10px}
 header h1{font-size:18px;margin:0}
 header .sub{font-size:12px;opacity:.75;margin-top:2px}
-.bar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:58px;z-index:4}
+.bar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line)}
 .bar input,.bar select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);min-width:0}
 .bar input[type=search]{flex:1 1 160px}
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;-webkit-overflow-scrolling:touch}
 .tabs button{flex:0 0 auto;font:inherit;font-size:13px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 .tabs button.on{background:var(--acc);border-color:var(--acc);color:#fff}
-.wrap{overflow-x:auto;margin:0 0 24px;-webkit-overflow-scrolling:touch}
+.wrap{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch}
+.wrap>.tabs,.wrap>footer{position:sticky;left:0}
 table{border-collapse:separate;border-spacing:0;width:100%;font-variant-numeric:tabular-nums}
 th,td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
 th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--mut);cursor:pointer;user-select:none;z-index:2}
@@ -880,6 +884,15 @@ tbody tr:hover td{background:var(--chip)}
 .small{font-size:12px}
 svg.spark{vertical-align:middle}
 .hint{padding:0 16px 8px}
+/* Handy: oberen festen Bereich klein halten, damit für die Tabelle Platz bleibt */
+@media (max-width:600px){
+  header{padding:8px 16px 6px} header h1{font-size:16px} header .sub{font-size:11px}
+  .bar{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px 16px}
+  .bar input[type=search]{grid-column:1/-1}
+  .bar input,.bar select{padding:5px 7px;font-size:13px}
+  .tabs{padding:6px 16px} .tabs button{padding:4px 10px;font-size:12px}
+  .hint{font-size:11px;padding:0 16px 6px}
+}
 .empty{padding:30px;text-align:center;color:var(--mut)}
 dialog{border:none;border-radius:14px;padding:0;width:min(640px,96vw);max-height:92vh;background:var(--card);color:var(--fg)}
 dialog::backdrop{background:rgba(0,0,0,.55)}
@@ -909,14 +922,14 @@ a{color:var(--acc)}
 </div>
 <div class="tabs" id="tabs"></div>
 <div class="hint small mut" id="hint"></div>
-<div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table></div>
+<div class="wrap"><table id="tbl"><thead></thead><tbody></tbody></table>
 <div class="tabs"><span class="small mut" id="count"></span></div>
 <footer>
   Daten: <a href="https://www.opel-hbl.de/de/hbl/statistiken">opel-hbl.de</a> &amp; <a href="https://hpi.handball-bundesliga.de">HPI der HBL</a>.
   Spalten antippen zum Sortieren (Erklärung erscheint über der Tabelle, am PC auch beim Überfahren), Zeile antippen für Details &amp; HPI-Verlauf.
   <a href="hbl_start7.xlsx">Excel herunterladen</a>.
   <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners. ≈S7 = Start7-Punkte, aus der Saisonstatistik geschätzt (nicht die offiziellen App-Werte). ⚠ = seit ≥2 Teamspielen ohne Einsatz, 📰 = Meldung zu Verletzung/Ausfall.
-</footer>
+</footer></div>
 <dialog id="dlg"><div class="dlg" id="dlgc"></div></dialog>
 <script>
 const DATA = __DATA__;
