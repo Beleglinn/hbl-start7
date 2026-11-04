@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import email.utils
 import json
 import math
 import re
@@ -31,6 +32,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 import requests
@@ -45,6 +47,20 @@ HBL_COMPETITION_IDS = ["4c445e5c-3956-11ef-9d0e-b74f5c057367", "4c5a3af0-3956-11
 # Fallback, falls die Saison nicht automatisch ermittelt werden kann (Saison 2026/27)
 DEFAULT_SYNERGY_SEASON = "c4a3125f-79f2-11f1-9a19-5f7c8c2ed877"
 TZ = ZoneInfo("Europe/Berlin")
+
+# Verletzungsmeldungen: Google-News-RSS (allgemeine Suchen + "<Verein> verletzt" je Team)
+NEWS_RSS = "https://news.google.com/rss/search"
+NEWS_QUERIES = ["Handball verletzt", "Handball Verletzung Bundesliga", "Handball fällt aus", "Handball Kreuzbandriss",
+                "Handball Operation Ausfall", "Handball Comeback Bundesliga"]
+NEWS_DAYS = 45
+# nur Schlagzeilen mit einem dieser Begriffe zaehlen (Team-Suchen liefern auch Spielberichte)
+NEWS_KEYWORDS = re.compile(r"verletz|kreuzband|riss\b|(?:finger|hand|fuß|nasen|jochbein|knochen|bein|arm|rippen)bruch|"
+                           r"gebrochen|\bOP\b|operation|operiert|fällt .*aus|fallen .*aus|ausfall|fehlt|\bpause\b|"
+                           r"zwangspause|verletzungspause|comeback|zurück (?:im|in|auf|aufs|nach)\b|blessur|muskel|"
+                           r"knie|schulter|sprunggelenk|achilles|gehirnerschütterung|sperre|gesperrt|reha|saisonaus",
+                           re.I)
+# Namensteile von Vereinen, die keinen bestimmten Verein erkennen lassen
+TEAM_GENERIC = {"Handball", "Club", "FRISCH", "AUF!"}
 
 POS_DE = {
     "Goalkeeper": ("TW", "Torwart"),
@@ -127,15 +143,21 @@ class Fetcher:
             (self.dump_dir / key).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         return data
 
-    def get_text(self, url: str) -> str | None:
+    def get_text(self, url: str, params: dict | None = None) -> str | None:
+        key = self._key(url, params)[:-5] + ".txt"
         if self.from_dump:
-            return None
+            p = self.from_dump / key
+            return p.read_text(encoding="utf-8") if p.exists() else None
         try:
-            r = self.session.get(url, timeout=self.timeout)
+            r = self.session.get(url, params=params, timeout=self.timeout)
             r.raise_for_status()
-            return r.text
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            log(f"  (optional) {url} fehlgeschlagen: {e}")
             return None
+        if self.dump_dir:
+            self.dump_dir.mkdir(parents=True, exist_ok=True)
+            (self.dump_dir / key).write_text(r.text, encoding="utf-8")
+        return r.text
 
 
 # --------------------------------------------------------------------------- #
@@ -536,6 +558,14 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
                              opp=o.get("abbr") or o.get("name", "?"), opp_name=o.get("name", "?"),
                              home=last_fx["home"], gf=last_fx["gf"], ga=last_fx["ga"], hpi=series[rd])
 
+        # Einsatz: verpasste Spiele exakt aus der Statistik; "Pause" = Teamspiele seit dem letzten HPI-Spiel,
+        # gedeckelt durch die verpassten Spiele (Einsaetze ohne HPI-Wert sollen keine Pause vortaeuschen)
+        team_games = team.get("games") or 0
+        missed = max(team_games - games, 0) if team else None
+        since = (sum(1 for x in team.get("fixtures") or [] if x["status"] == "CONFIRMED" and x["start"]
+                     and x["start"] > last_fx["start"]) if last_fx else team_games)
+        absent = min(since, missed) if missed is not None else None
+
         speed = sf.get("speedMax") if sf else sg.get("speedMax") if sg else None
         s7 = start7_points(sf, sg, games, s7_lg)
         players.append(dict(
@@ -580,11 +610,74 @@ def build_players(raw: dict, teams: dict, today: dt.date) -> tuple[list[dict], l
             save_fb_pct=rnd(sg.get("goalKeeperFastBreakSaveAccuracy")),
             # Spielplan
             next=nxt, last_game=last_game,
+            # Verfuegbarkeit (news wird in attach_news gefuellt)
+            team_games=team_games, missed=missed, absent=absent, news=[],
         ))
     # Nur echte Spieler (Statistik oder HPI vorhanden)
     players = [p for p in players if p["games"] or p["hpi_avg"] is not None]
     players.sort(key=lambda p: (-(p["hpi_avg"] or 0), -(p["games"] or 0)))
     return players, md_numbers
+
+
+def fetch_news(f: Fetcher, teams: dict) -> list[dict]:
+    """Schlagzeilen aus Google-News-RSS (Titel, Quelle, Link, Datum), dedupliziert"""
+    queries = NEWS_QUERIES + [f"{t['name']} verletzt" for t in teams.values()]
+    items: dict[str, dict] = {}
+    log(f"News: {len(queries)} Suchen")
+    for q in queries:
+        xml = f.get_text(NEWS_RSS, {"q": f"{q} when:{NEWS_DAYS}d", "hl": "de", "gl": "DE", "ceid": "DE:de"})
+        if not xml:
+            continue
+        try:
+            root = ElementTree.fromstring(xml)
+        except ElementTree.ParseError:
+            continue
+        for it in root.iter("item"):
+            title, src = it.findtext("title") or "", it.findtext("source") or ""
+            if src and title.endswith(" - " + src):
+                title = title[:-len(src) - 3]
+            try:
+                date = email.utils.parsedate_to_datetime(it.findtext("pubDate") or "")
+            except (TypeError, ValueError):
+                continue
+            items.setdefault(title.strip(), dict(title=title.strip(), src=src, url=it.findtext("link"), date=date))
+    return list(items.values())
+
+
+def attach_news(players: list[dict], teams: dict, news: list[dict], now: dt.datetime) -> None:
+    """Ordnet Verletzungs-Schlagzeilen Spielern zu: voller Name, oder eindeutiger Nachname (ab 5 Zeichen)
+    zusammen mit einem Hinweis auf den Verein (Ort, Spitzname oder Kuerzel)."""
+    def norm(s):
+        return re.sub(r"\s+", " ", s or "").strip()
+
+    team_pat = {}
+    for t in teams.values():
+        parts = [w for w in re.split(r"[\s-]+", t["name"]) if w not in TEAM_GENERIC]
+        alts = [re.escape(w) for w in parts if len(w) >= 4] + [re.escape(w) + r"\b" for w in parts if len(w) < 4]
+        team_pat[t["id"]] = re.compile(r"\b(?:" + "|".join(alts) + r")", re.I) if alts else None
+    abbr_pat = {t["id"]: re.compile(r"\b" + re.escape(t["abbr"]) + r"\b") for t in teams.values() if t["abbr"]}
+    last_count: dict[str, int] = {}
+    for p in players:
+        last_count[norm(p["last"])] = last_count.get(norm(p["last"]), 0) + 1
+
+    fresh = [n for n in news if n["date"] >= now - dt.timedelta(days=NEWS_DAYS) and NEWS_KEYWORDS.search(n["title"])]
+    fresh.sort(key=lambda n: n["date"], reverse=True)
+    for p in players:
+        full, last = norm(p["name"]), norm(p["last"])
+        full_re = re.compile(r"\b" + re.escape(full) + r"\b")
+        # Nachname allein nur, wenn eindeutig, nicht zu kurz und nicht selbst Vereinsname ("Löwen")
+        last_re = (re.compile(r"\b" + re.escape(last) + r"\b")
+                   if len(last) >= 5 and last_count[last] == 1
+                   and not any(tp_ and tp_.fullmatch(last) for tp_ in team_pat.values()) else None)
+        tp, ap = team_pat.get(p["team_id"]), abbr_pat.get(p["team_id"])
+        hits = []
+        for n in fresh:
+            t = n["title"]
+            if full_re.search(t) or (last_re and last_re.search(t)
+                                     and ((tp and tp.search(t)) or (ap and ap.search(t)))):
+                hits.append(dict(date=n["date"].astimezone(TZ).strftime("%d.%m."), title=n["title"], src=n["src"],
+                                 url=n["url"], days=(now - n["date"]).days))
+        p["news"] = hits[:3]
 
 
 # --------------------------------------------------------------------------- #
@@ -612,6 +705,8 @@ COLUMNS = [  # key, header, width, group
     ("ga", "Gegentore", 9, "Torwart"), ("saves7", "7m gehalten", 9, "Torwart"), ("save7_pct", "7m %", 6, "Torwart"),
     ("dist_km", "Laufweg km", 9, "Tracking"), ("speed_kmh", "Max km/h", 8, "Tracking"),
     ("last1", "Letztes Spiel", 24, "Spielplan"), ("last1_days", "Tage seit letztem Spiel", 9, "Spielplan"),
+    ("missed", "Verpasste Spiele", 9, "Verfügbarkeit"), ("absent", "Pause (Teamspiele ohne Einsatz)", 10, "Verfügbarkeit"),
+    ("news1", "Letzte Meldung", 50, "Verfügbarkeit"),
     ("next1", "Nächster Gegner", 16, "Spielplan"), ("next1_rank", "Gegner Platz", 8, "Spielplan"),
     ("next1_ga", "Gegner Gegentore/Sp", 10, "Spielplan"), ("team", "Verein", 24, "Basis"),
 ]
@@ -655,7 +750,8 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
         lg = p["last_game"] or {}
         row = dict(p, next1=next_label(p), next1_rank=n.get("opp_rank"), next1_ga=n.get("opp_ga_pg"),
                    last1=f"{lg['date']} {'H' if lg['home'] else 'A'} vs {lg['opp']}" if lg else None,
-                   last1_days=lg.get("days"))
+                   last1_days=lg.get("days"),
+                   news1=f"{p['news'][0]['date']} {p['news'][0]['title']} ({p['news'][0]['src']})" if p["news"] else None)
         for c, (k, *_rest) in enumerate(COLUMNS, 1):
             cell = ws.cell(row=r, column=c, value=row.get(k))
             if k == "name":
@@ -728,6 +824,10 @@ def write_excel(path: Path, players: list[dict], md_numbers: list[int], teams: d
             ("Streuung (σ)", "Standardabweichung des HPI: klein = konstant, groß = schwankend."),
             ("HPI-Spiele", "Spieltage mit genug Aktionen für einen HPI-Wert (HBL-Ranking braucht 5)."),
             ("Letztes Spiel", "Jüngstes Spiel mit HPI-Wert des Spielers (Einsätze mit zu wenig Aktionen zählen nicht)."),
+            ("Verpasste Spiele", "Spiele des Vereins minus Spiele des Spielers laut offizieller Statistik."),
+            ("Pause", "Teamspiele seit dem letzten Einsatz mit HPI-Wert (höchstens so viele wie verpasste Spiele)."),
+            ("Letzte Meldung", "Neueste Schlagzeile zu Verletzung/Ausfall/Comeback aus Google News (45 Tage), automatisch "
+                               "über Namen zugeordnet – nur ein Hinweis."),
             ("Crunchtime Ø", "HPI-Beitrag in den Schlussminuten enger Spiele (HBL-Wert)."),
             ("Start7-Pkt (geschätzt)", "Nach der Start7-Punktetabelle aus der Saisonstatistik nachgerechnet. Fehlen: 7 m "
                                        "verursacht, Offensivfouls, Stopfouls; Wurfarten/Assists teils geschätzt."),
@@ -815,7 +915,7 @@ a{color:var(--acc)}
   Daten: <a href="https://www.opel-hbl.de/de/hbl/statistiken">opel-hbl.de</a> &amp; <a href="https://hpi.handball-bundesliga.de">HPI der HBL</a>.
   Spalten antippen zum Sortieren (Erklärung erscheint über der Tabelle, am PC auch beim Überfahren), Zeile antippen für Details &amp; HPI-Verlauf.
   <a href="hbl_start7.xlsx">Excel herunterladen</a>.
-  <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners. ≈S7 = Start7-Punkte, aus der Saisonstatistik geschätzt (nicht die offiziellen App-Werte).
+  <br>Form = Ø HPI der letzten 3 Spieltage · Δ = Form minus Saisonschnitt · σ = Streuung (Konstanz) · Gegner GT/Sp = Gegentore pro Spiel des nächsten Gegners. ≈S7 = Start7-Punkte, aus der Saisonstatistik geschätzt (nicht die offiziellen App-Werte). ⚠ = seit ≥2 Teamspielen ohne Einsatz, 📰 = Meldung zu Verletzung/Ausfall.
 </footer>
 <dialog id="dlg"><div class="dlg" id="dlgc"></div></dialog>
 <script>
@@ -824,6 +924,9 @@ const P = DATA.players, MD = DATA.matchdays;
 const POSN = {TW:"Torwart",LA:"Linksaußen",RA:"Rechtsaußen",RL:"Rückraum links",RR:"Rückraum rechts",RM:"Rückraum Mitte",KM:"Kreis","?":"unbekannt"};
 const f1 = v => v==null ? "–" : (Math.round(v*10)/10).toLocaleString("de-DE");
 const f0 = v => v==null ? "–" : String(v);
+const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const flags = p => (p.absent>=2 ? ` <span title="Seit ${p.absent} Teamspielen ohne Einsatz">⚠</span>` : "")
+  + (p.news.length ? ` <span title="${esc(p.news[0].date+" "+p.news[0].title)}">📰</span>` : "");
 function hpiColor(v){ if(v==null) return "transparent"; const t=Math.max(0,Math.min(1,(v-50)/45));
   const h=t*125; return `hsl(${h} 70% ${62 - t*8}%)`; }
 const hpiCell = v => v==null ? '<span class="mut">–</span>' : `<span class="hpi" style="background:${hpiColor(v)}">${Math.round(v)}</span>`;
@@ -837,7 +940,7 @@ function spark(s, w=90, h=24){ const pts=s.map((v,i)=>[i,v]).filter(p=>p[1]!=nul
 const nextTxt = p => p.next.length ? `${p.next[0].home?'H':'A'} ${p.next[0].opp}` : '–';
 
 const COLS = {
-  name:{h:"Spieler",t:"Spielername; darunter Vereinskürzel und Position. Sortiert nach Nachname.",cls:"tl",v:p=>p.last,r:p=>`${p.name}<div class="small mut">${p.team_abbr} · <span class="pos">${p.pos}</span></div>`},
+  name:{h:"Spieler",t:"Spielername; darunter Vereinskürzel und Position. ⚠ = seit mindestens 2 Teamspielen ohne Einsatz, 📰 = aktuelle Meldung zu Verletzung/Ausfall. Sortiert nach Nachname.",cls:"tl",v:p=>p.last,r:p=>`${p.name}${flags(p)}<div class="small mut">${p.team_abbr} · <span class="pos">${p.pos}</span></div>`},
   pos:{h:"Pos",t:"Position: TW Torwart, LA/RA Links-/Rechtsaußen, RL/RM/RR Rückraum links/Mitte/rechts, KM Kreis.",v:p=>"TWLARLRMRRRAKM?".indexOf(p.pos),r:p=>`<span class="pos">${p.pos}</span>`},
   team_abbr:{h:"Team",t:"Kürzel des Vereins.",cls:"tl",v:p=>p.team_abbr},
   hpi_avg:{h:"Ø HPI",t:"Saisondurchschnitt des Handball Performance Index (0–100) laut HBL über alle Spieltage mit HPI-Wert.",v:p=>p.hpi_avg,r:p=>hpiCell(p.hpi_avg)},
@@ -880,6 +983,10 @@ const COLS = {
   next:{h:"Nächster",t:"Nächstes Spiel: H = Heim, A = Auswärts, gegen Vereinskürzel. Sortiert nach Tabellenplatz des Gegners.",cls:"tl",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>nextTxt(p)},
   next_rank:{h:"Geg.-Pl.",t:"Aktueller Tabellenplatz des nächsten Gegners.",v:p=>p.next.length?p.next[0].opp_rank:null,r:p=>p.next.length?f0(p.next[0].opp_rank):"–"},
   next_ga:{h:"Geg. GT/Sp",t:"Gegentore pro Spiel des nächsten Gegners: hoch = gutes Matchup für Angreifer.",v:p=>p.next.length?p.next[0].opp_ga_pg:null,r:p=>p.next.length?f1(p.next[0].opp_ga_pg):"–"},
+  missed:{h:"Verp.",t:"Verpasste Spiele: Spiele des Vereins minus Spiele des Spielers (offizielle Statistik).",v:p=>p.missed,r:p=>f0(p.missed)},
+  absent:{h:"Pause",t:"Teamspiele seit dem letzten Einsatz mit HPI-Wert, höchstens so viele wie verpasste Spiele. Ab 2 = ⚠ (verletzt, gesperrt oder nicht berücksichtigt).",v:p=>p.absent,r:p=>p.absent>=2?`<b>${p.absent}</b>`:f0(p.absent)},
+  last_days:{h:"Zuletzt",t:"Tage seit dem letzten Spiel mit HPI-Wert.",v:p=>p.last_game?p.last_game.days:null,r:p=>p.last_game?`vor ${p.last_game.days} T.`:"–"},
+  news:{h:"Meldung",t:"Neueste Schlagzeile zu Verletzung, Ausfall oder Comeback (Google News, letzte 45 Tage). Nur ein Hinweis – Details in der Detailansicht.",cls:"tl",v:p=>p.news.length?-p.news[0].days:null,r:p=>p.news.length?`<span class="small" title="${esc(p.news[0].title)}">${p.news[0].date} ${esc(p.news[0].title.length>48?p.news[0].title.slice(0,47)+"…":p.news[0].title)}</span>`:"–"},
   md_hpi:{h:"HPI ST",t:"HPI-Wert des Spielers am gewählten Spieltag.",v:p=>p.hpi_series[MD.indexOf(+$("#md").value)],r:p=>hpiCell(COLS.md_hpi.v(p))},
 };
 const VIEWS = {
@@ -890,6 +997,7 @@ const VIEWS = {
   "Abwehr":    {cols:["name","steals","blocks","two_min","red","tf_pg","min_pg","hpi_avg"], sort:"steals"},
   "Torhüter":  {cols:["name","s7_pg","hpi_avg","hpi_form3","saves","saves_pg","save_pct","ga","save7_pct","games","min_pg","next","next_ga"], sort:"hpi_avg", pos:"TW"},
   "Punkte":    {cols:["name","s7_pts","s7_pg","hpi_avg","hpi_form3","games","min_pg","next","next_ga"], sort:"s7_pts"},
+  "Ausfälle":  {cols:["name","absent","missed","last_days","news","min_pg","games","hpi_avg","s7_pg"], sort:"absent"},
   "Tracking":  {cols:["name","dist_km","speed_kmh","min_pg","games","hpi_avg"], sort:"speed_kmh"},
   "Gegner":    {cols:["name","next","next_rank","next_ga","hpi_avg","hpi_form3"], sort:"next_ga"},
 };
@@ -947,6 +1055,8 @@ function detail(p){ if(!p) return; const gk=p.pos==="TW";
   ${kpi("Tore",f0(p.goals))}${gk?"":kpi("Tore/Sp",f1(p.goals_pg))+kpi("Würfe",f0(p.shots))+kpi("Quote",p.acc==null?"–":f1(p.acc)+"%")+kpi("7m",`${f0(p.g7)} (${p.acc7==null?"–":f1(p.acc7)+"%"})`)+kpi("Gegenstoß",f0(p.g_fb))+kpi("Außen / Rückraum",`${f0(p.g_wing)} / ${f0(p.g_back)}`)+kpi("9m / Kreis",`${f0(p.g_9m)} / ${f0(p.g_pivot)}`)}
   ${kpi("Assists",f0(p.assists))}${kpi("Steals",f0(p.steals))}${gk?"":kpi("Blocks",f0(p.blocks))+kpi("Techn. Fehler",f0(p.tf))}
   ${kpi("2 Min / Rot",`${f0(p.two_min)} / ${f0(p.red)}`)}${kpi("Laufweg",p.dist_km==null?"–":f1(p.dist_km)+" km")}${kpi("Max-Speed",p.speed_kmh==null?"–":f1(p.speed_kmh)+" km/h")}</div>
+  <div class="sect">Verfügbarkeit</div><div class="grid">${kpi("Verpasste Spiele",`${f0(p.missed)} von ${f0(p.team_games)}`)}${kpi("Pause (Teamspiele)",f0(p.absent)+(p.absent>=2?" ⚠":""))}${kpi("Min/Spiel",f1(p.min_pg))}</div>
+  ${p.news.length?`<ul class="small">${p.news.map(n=>`<li>${n.date} <a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a> <span class="mut">(${esc(n.src)})</span></li>`).join("")}</ul><div class="small mut">Automatisch zugeordnete Schlagzeilen – Stand und Zuordnung bitte selbst prüfen.</div>`:'<div class="small mut">Keine aktuellen Meldungen zu Verletzung/Ausfall gefunden.</div>'}
   <div class="sect">Nächste Spiele</div><ul class="small">${nx}</ul>
   <a href="${p.url}" target="_blank" rel="noopener">Spielerprofil auf opel-hbl.de ↗</a>`;
   dlg.showModal(); }
@@ -981,6 +1091,7 @@ def main(argv=None) -> int:
     now = dt.datetime.fromisoformat(a.now).astimezone(dt.timezone.utc) if a.now else dt.datetime.now(dt.timezone.utc)
     teams = build_teams(raw, now)
     players, md_numbers = build_players(raw, teams, now.date())
+    attach_news(players, teams, fetch_news(f, teams), now)
     done = [x for t in teams.values() for x in t["fixtures"]
             if x["status"] == "CONFIRMED" and x["start"] and str(x["round"]).isdigit()]
     current_md = int(max(done, key=lambda x: x["start"])["round"]) if done else None

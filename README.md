@@ -45,6 +45,9 @@ fest vorgeben), `--from-dump raw` (offline aus Rohdaten bauen).
 | Letzter ▲▼ | HPI des letzten Spiels (nach Datum, verlegte Spieltage berücksichtigt) und Trend zum vorherigen Spiel |
 | Letztes Spiel | Datum, Gegner und Ergebnis des jüngsten Spiels mit HPI-Wert (Detailansicht & Excel) |
 | Spieltag-Filter | Zeigt nur Spieler mit HPI-Wert an diesem Spieltag und sortiert nach diesem Wert |
+| Verp. | Verpasste Spiele: Spiele des Vereins minus Spiele des Spielers |
+| Pause ⚠ | Teamspiele seit dem letzten Einsatz mit HPI-Wert (höchstens so viele wie verpasste Spiele); ab 2 erscheint ⚠ am Namen |
+| Meldung 📰 | Neueste Schlagzeile zu Verletzung/Ausfall/Comeback aus Google News (45 Tage), automatisch per Name zugeordnet – nur ein Hinweis, Reiter *Ausfälle* und Detailansicht |
 | σ | Streuung des HPI – klein = konstant, groß = Wundertüte |
 | HPI-Sp | Spiele mit HPI-Wert (HBL-Rangliste verlangt mindestens 5) |
 | Ø o.7m | HPI ohne Siebenmeter-Aktionen |

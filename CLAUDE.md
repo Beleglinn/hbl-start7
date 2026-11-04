@@ -28,7 +28,7 @@ Syntaxfehler fallen erst im Browser auf – nach Änderungen das `<script>` der 
 
 1. `Fetcher` – GET mit Retries; `--dump` schreibt jede Antwort als Datei, `--from-dump` liest nur noch daraus
    (Dateiname aus URL + Parametern, siehe `Fetcher._key`).
-2. `fetch_all` – zwei Quellen:
+2. `fetch_all` – zwei Datenquellen (dazu später `fetch_news`, siehe unten):
    - **HPI-API** (`hpi.handball-bundesliga.de/api`): Saisonindex, Vorsaison, Crunchtime und HPI **pro Spieltag**
      (ein Request je Spieltag). Spieler-ID ist `dc_id`.
    - **Synergy/Sportradar** über `opel-hbl.de/api/synergy`: Saisonstatistik Feldspieler + Torwart, Kader, Spielplan.
@@ -53,6 +53,15 @@ Feld in `build_players` + Eintrag in `COLS`/`VIEWS` + ggf. `COLUMNS` (Excel) + Z
 - In der Saisonstatistik ist nur ein Teil der Tore einer Wurfart zugeordnet; Würfe pro Wurfart nur über die Quote
   ableitbar (`shots_from`). Quote 0 bei 0 Toren = Wurfzahl unbekannt.
 - Ein Spieltag ohne HPI-Wert heißt nicht zwingend „nicht gespielt“ (zu wenige Aktionen für einen HPI).
+
+## Verfügbarkeit & Verletzungsmeldungen
+
+Einen Verletzungsstatus liefert keine Quelle (Kader-`status` ist immer `ACTIVE`). `missed`/`absent` werden aus
+Statistik und HPI-Verlauf berechnet. `fetch_news` holt Google-News-RSS (`NEWS_QUERIES` + „<Verein> verletzt“ je
+Team, `NEWS_DAYS`), `attach_news` ordnet Schlagzeilen zu: voller Name, oder eindeutiger Nachname ≥ 5 Zeichen plus
+Vereinshinweis im Titel; nur Titel mit `NEWS_KEYWORDS`. Neue Schlüsselwörter gegen echte Schlagzeilen testen –
+„zurück“, „bruch“, „pause“ allein haben schon Fehltreffer erzeugt (Kündigung zurückgezogen, Durchbruch,
+Länderspielpause), ebenso Nachnamen wie „Löwen“. RSS-Antworten landen mit `--dump` als `.txt` im Dump.
 
 ## Start7-Punkte (geschätzt)
 
